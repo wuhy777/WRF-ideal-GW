@@ -132,6 +132,7 @@ CONTAINS
    INTEGER :: xs , xe , ys , ye
    REAL :: mtn_ht
    REAL :: randx       ! for LES
+   REAL, ALLOCATABLE, DIMENSION(:,:) :: ht_global ! for terrain height input (WHY)
    INTEGER :: ks, ke, id
 
    LOGICAL, EXTERNAL :: wrf_dm_on_monitor
@@ -902,15 +903,30 @@ CONTAINS
   ENDDO
   ENDDO
 
+!! Read real terrain data (WHY)
   CASE (quarter_ss, convrad, squall2d_x, squall2d_y, grav2d_x, b_wave, seabreeze2d_x)
+
+  ALLOCATE( ht_global(its:ite,jts:jte) )
+  ht_global = 0.0
+
+  IF ( wrf_dm_on_monitor() ) THEN
+    CALL read_input_terrain(ht_global, ids, ide, jds, jde)
+  ENDIF
+
+  CALL wrf_dm_bcast_real( ht_global, (ide-ids+1)*(jde-jds+1) )
+
   DO j=jts,jte
   DO i=its,ite  
-    grid%ht(i,j) = 0.
+    grid%ht(i,j) = ht_global(i,j)
     grid%phb(i,1,j) = g*grid%ht(i,j)
     grid%php(i,1,j) = 0.
     grid%ph0(i,1,j) = grid%phb(i,1,j)
   ENDDO
   ENDDO
+
+  IF ( ALLOCATED(ht_global) ) THEN
+    DEALLOCATE( ht_global )
+  ENDIF
 
   CASE (les)
   DO j=jts,jte
@@ -1088,6 +1104,8 @@ CONTAINS
   ideal_pert: SELECT CASE ( model_config_rec%ideal_case )
   CASE (quarter_ss)
 !  QSS thermal perturbation to kick off convection
+!! close the thermal perturbation (WHY) 
+  delt = 0.
 
   write(6,*) ' nxc, nyc for perturbation ',nxc,nyc
   write(6,*) ' delt for perturbation ',delt
@@ -2247,6 +2265,98 @@ CONTAINS
    enddo
 
  end subroutine read_input_jet
+
+!-----------------------------------------------------
+! Read in terrain height for 3-D GW simulations
+! Added by WHY 2025-12-01
+!-----------------------------------------------------
+
+SUBROUTINE read_input_terrain( ht_out, ids, ide, jds, jde)
+IMPLICIT NONE
+
+! Global variables
+INTEGER, INTENT(IN) :: ids, ide, jds, jde
+REAL, DIMENSION(ids:ide, jds:jde), INTENT(OUT) :: ht_out
+
+! Local variables
+INTEGER :: nx_ext, ny_ext ! external dimensions
+INTEGER :: nx_dom, ny_dom ! domain dimensions
+INTEGER :: i, j, ii, jj   ! loop indexes
+INTEGER :: i_src, j_src   ! external file indexes
+INTEGER :: center_dom_i, center_dom_j
+INTEGER :: center_ext_i, center_ext_j
+INTEGER :: shift_i, shift_j
+INTEGER :: iunit
+LOGICAL :: exists
+INTEGER :: ierr
+REAL, ALLOCATABLE, DIMENSION(:,:) :: ht_raw
+
+iunit = 10
+ht_out = 0.0 ! initialize output array
+
+! Open the terrain file
+INQUIRE(FILE='input_terrain', EXIST=exists)
+
+IF ( .NOT. exists ) THEN
+  CALL wrf_error_fatal('Error: File input_terrain not found.')
+END IF
+
+OPEN(unit=iunit, file='input_terrain', form='formatted', status='old')
+
+! Read the first line to get dimensions
+READ(iunit, *) nx_ext, ny_ext
+WRITE(6,*) 'Reading external terrain. Input Size: ', nx_ext, ' * ', ny_ext
+
+! Allocate raw terrain array
+ALLOCATE( ht_raw(1:nx_ext, 1:ny_ext) )
+
+! Read the terrain data
+DO jj = 1, ny_ext
+  READ(iunit, *, IOSTAT=ierr) (ht_raw(ii, jj), ii = 1, nx_ext)
+  IF (ierr /= 0) THEN
+    WRITE(6,*) 'Error at index i=', ii, 'j=', jj
+    CALL wrf_error_fatal("Error: End-of-file hit prematurely!")
+  END IF
+END DO
+CLOSE(iunit)
+
+! Calculate domain and center indices
+nx_dom = ide - ids + 1
+ny_dom = jde - jds + 1
+
+! Calculate center indices
+center_dom_i = nx_dom / 2 + ids
+center_dom_j = ny_dom / 2 + jds
+center_ext_i = nx_ext / 2 + 1
+center_ext_j = ny_ext / 2 + 1
+
+! Calculate shifts
+shift_i = center_ext_i - center_dom_i
+shift_j = center_ext_j - center_dom_j
+
+WRITE(6,*) 'Aligning terrain. Domain Center: ', center_dom_i, center_dom_j
+WRITE(6,*) 'External Center: ', center_ext_i, center_ext_j
+
+! Map the terrain data to the model domain
+DO j = jds, jde
+  DO i = ids, ide
+  ! Calculate source indices
+    i_src = i + shift_i
+    j_src = j + shift_j
+  ! Check bounds and assign terrain height
+    IF ( i_src >= 1 .AND. i_src <= nx_ext .AND. &
+        j_src >= 1 .AND. j_src <= ny_ext ) THEN
+      ht_out(i,j) = ht_raw(i_src, j_src)
+    ELSE
+      ht_out(i,j) = 0.0
+    END IF
+  END DO
+END DO
+
+! Deallocate raw terrain array
+DEALLOCATE( ht_raw )
+
+END SUBROUTINE read_input_terrain
 
 
 END MODULE module_initialize_ideal
