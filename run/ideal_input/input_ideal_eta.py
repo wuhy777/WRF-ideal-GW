@@ -33,6 +33,7 @@ def write_input_sounding(ds):
 	g = 9.81
 	cp = 1004.6
 	cv = 717.6
+	rvovrd = 1.608
 
 	u = ds['ua_low'].values
 	v = ds['va_low'].values
@@ -47,13 +48,14 @@ def write_input_sounding(ds):
 	theta0 = theta[0]
 	q0 = q[0] / 1000 # convert back to kg/kg
 
-	rho0 = 100000 / (rd * theta0) * (p0 / 100000)**(cv/cp)
+	qvf = 1.0 + rvovrd * q0
+	rho0 = 100000 / (rd * theta0 * qvf) * (p0 / 100000)**(cv/cp)
 
 	dp = - g * rho0 * z0 * (1 + q0)
 	psfc = p0 - dp
 	
 	q2 = q0 * 1000
-	theta2 = 100000 / (rd * rho0) * (psfc / 100000)**(cv/cp)
+	theta2 = 100000 / (rd * rho0 * qvf) * (psfc / 100000)**(cv/cp)
 
 	psfc = psfc / 100
 
